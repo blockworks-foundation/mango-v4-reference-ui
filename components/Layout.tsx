@@ -1,5 +1,4 @@
-import { Fragment, ReactNode, useEffect, useMemo, useState } from 'react'
-import { ArrowPathIcon } from '@heroicons/react/20/solid'
+import { Fragment, ReactNode, useEffect, useMemo } from 'react'
 import { useViewport } from '../hooks/useViewport'
 import { breakpoints } from '../utils/theme'
 import mangoStore from '@store/mangoStore'
@@ -9,9 +8,6 @@ import TopBar from './TopBar'
 import useLocalStorageState from '../hooks/useLocalStorageState'
 import { ACCEPT_TERMS_KEY, SIDEBAR_COLLAPSE_KEY } from '../utils/constants'
 import { useWallet } from '@solana/wallet-adapter-react'
-import useInterval from './shared/useInterval'
-import { Transition } from '@headlessui/react'
-import { useTranslation } from 'next-i18next'
 import TermsOfUseModal from './modals/TermsOfUseModal'
 
 const sideBarAnimationDuration = 500
