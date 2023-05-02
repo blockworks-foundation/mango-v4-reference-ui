@@ -32,12 +32,12 @@ import { LinkIcon, QuestionMarkCircleIcon } from '@heroicons/react/20/solid'
 import Loading from '@components/shared/Loading'
 import TabUnderline from '@components/shared/TabUnderline'
 import useLocalStorageState from 'hooks/useLocalStorageState'
-import { SOUND_SETTINGS_KEY } from 'utils/constants'
+import { SOUND_SETTINGS_KEY, TRADE_CHECKBOXES_KEY } from 'utils/constants'
 import SpotButtonGroup from './SpotButtonGroup'
 import PerpButtonGroup from './PerpButtonGroup'
 import SolBalanceWarnings from '@components/shared/SolBalanceWarnings'
 import useSelectedMarket from 'hooks/useSelectedMarket'
-import { getDecimalCount } from 'utils/numbers'
+import { floorToDecimal, getDecimalCount } from 'utils/numbers'
 import LogoWithFallback from '@components/shared/LogoWithFallback'
 import useIpAddress from 'hooks/useIpAddress'
 import ButtonGroup from '@components/forms/ButtonGroup'
@@ -58,12 +58,25 @@ const successSound = new Howl({
   volume: 0.5,
 })
 
+const INPUT_SUFFIX_CLASSNAMES =
+  'absolute right-[1px] top-1/2 flex h-[calc(100%-2px)] -translate-y-1/2 items-center rounded-r-md bg-th-input-bkg px-2 text-xs font-normal text-th-fgd-4'
+
+const INPUT_PREFIX_CLASSNAMES =
+  'absolute left-2 top-1/2 h-5 w-5 flex-shrink-0 -translate-y-1/2'
+
+const DEFAULT_CHECKBOX_SETTINGS = {
+  ioc: false,
+  post: false,
+  margin: true,
+}
+
 const AdvancedTradeForm = () => {
   const { t } = useTranslation(['common', 'trade'])
   const { mangoAccount } = useMangoAccount()
   const tradeForm = mangoStore((s) => s.tradeForm)
-  const [useMargin, setUseMargin] = useState(true)
   const [placingOrder, setPlacingOrder] = useState(false)
+  const [savedCheckboxSettings, setSavedCheckboxSettings] =
+    useLocalStorageState(TRADE_CHECKBOXES_KEY, DEFAULT_CHECKBOX_SETTINGS)
   const { ipAllowed, ipCountry } = useIpAddress()
   const [soundSettings] = useLocalStorageState(
     SOUND_SETTINGS_KEY,
@@ -78,6 +91,7 @@ const AdvancedTradeForm = () => {
     baseSymbol,
     quoteLogoURI,
     quoteSymbol,
+    serumOrPerpMarket,
   } = useSelectedMarket()
 
   const setTradeType = useCallback((tradeType: 'Limit' | 'Market') => {
@@ -141,21 +155,49 @@ const AdvancedTradeForm = () => {
     [oraclePrice]
   )
 
-  const handlePostOnlyChange = useCallback((postOnly: boolean) => {
-    set((s) => {
-      s.tradeForm.postOnly = postOnly
-      if (s.tradeForm.ioc === true) {
-        s.tradeForm.ioc = !postOnly
+  const handlePostOnlyChange = useCallback(
+    (postOnly: boolean) => {
+      let ioc = tradeForm.ioc
+      if (postOnly) {
+        ioc = !postOnly
       }
-    })
-  }, [])
+      set((s) => {
+        s.tradeForm.postOnly = postOnly
+        s.tradeForm.ioc = ioc
+      })
+      setSavedCheckboxSettings({
+        ...savedCheckboxSettings,
+        ioc: ioc,
+        post: postOnly,
+      })
+    },
+    [savedCheckboxSettings]
+  )
 
-  const handleIocChange = useCallback((ioc: boolean) => {
+  const handleIocChange = useCallback(
+    (ioc: boolean) => {
+      let postOnly = tradeForm.postOnly
+      if (ioc) {
+        postOnly = !ioc
+      }
+      set((s) => {
+        s.tradeForm.ioc = ioc
+        s.tradeForm.postOnly = postOnly
+      })
+      setSavedCheckboxSettings({
+        ...savedCheckboxSettings,
+        ioc: ioc,
+        post: postOnly,
+      })
+    },
+    [savedCheckboxSettings]
+  )
+
+  useEffect(() => {
+    const { ioc, post } = savedCheckboxSettings
     set((s) => {
       s.tradeForm.ioc = ioc
-      if (s.tradeForm.postOnly === true) {
-        s.tradeForm.postOnly = !ioc
-      }
+      s.tradeForm.postOnly = post
     })
   }, [])
 
@@ -171,15 +213,72 @@ const AdvancedTradeForm = () => {
     })
   }, [])
 
-  const handleSetMargin = useCallback((e: ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.checked) {
-      set((s) => {
-        s.tradeForm.quoteSize = ''
-        s.tradeForm.baseSize = ''
+  const handleSetMargin = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      setSavedCheckboxSettings({
+        ...savedCheckboxSettings,
+        margin: e.target.checked,
       })
-    }
-    setUseMargin(e.target.checked)
-  }, [])
+
+      const { group } = mangoStore.getState()
+      const { tradeType, side, price, baseSize, quoteSize } = tradeForm
+      const tradePrice = tradeType === 'Market' ? oraclePrice : price
+
+      if (
+        !group ||
+        !mangoAccount ||
+        !tradePrice ||
+        !(selectedMarket instanceof Serum3Market)
+      ) {
+        return
+      }
+
+      const isBuySide = side === 'buy'
+      const tokenIndex =
+        selectedMarket[isBuySide ? 'quoteTokenIndex' : 'baseTokenIndex']
+      const balance = mangoAccount.getTokenBalanceUi(
+        group.getFirstBankByTokenIndex(tokenIndex)
+      )
+      const max = Math.max(balance, 0)
+
+      const sizeToCompare = isBuySide ? quoteSize : baseSize
+      const isSizeTooLarge = parseFloat(sizeToCompare) > max
+
+      set((s) => {
+        if (max <= 0) {
+          s.tradeForm.baseSize = ''
+          s.tradeForm.quoteSize = ''
+          return
+        }
+        if (isSizeTooLarge) {
+          if (isBuySide) {
+            s.tradeForm.quoteSize = floorToDecimal(max, tickDecimals).toFixed()
+            s.tradeForm.baseSize = floorToDecimal(
+              max / Number(tradePrice),
+              minOrderDecimals
+            ).toFixed()
+          } else {
+            s.tradeForm.baseSize = floorToDecimal(
+              max,
+              minOrderDecimals
+            ).toFixed()
+            s.tradeForm.quoteSize = floorToDecimal(
+              max * Number(tradePrice),
+              tickDecimals
+            ).toFixed()
+          }
+        }
+      })
+    },
+    [
+      mangoAccount,
+      oraclePrice,
+      savedCheckboxSettings,
+      selectedMarket,
+      set,
+      tradeForm,
+    ]
+  )
 
   const [tickDecimals] = useMemo(() => {
     const group = mangoStore.getState().group
@@ -197,7 +296,7 @@ const AdvancedTradeForm = () => {
     return [tickDecimals, tickSize]
   }, [selectedMarket])
 
-  const [minOrderDecimals] = useMemo(() => {
+  const [minOrderDecimals, minOrderSize] = useMemo(() => {
     const group = mangoStore.getState().group
     if (!group || !selectedMarket) return [1, 0.1]
     let minOrderSize: number
@@ -314,6 +413,8 @@ const AdvancedTradeForm = () => {
             : tradeForm.postOnly
             ? PerpOrderType.postOnly
             : PerpOrderType.limit
+        console.log('perpOrderType', perpOrderType)
+
         const tx = await client.perpPlaceOrder(
           group,
           mangoAccount,
@@ -366,6 +467,11 @@ const AdvancedTradeForm = () => {
     connected ? handlePlaceOrder() : handleConnect()
   }
 
+  const disabled =
+    (connected && (!tradeForm.baseSize || !tradeForm.price)) ||
+    !serumOrPerpMarket ||
+    parseFloat(tradeForm.baseSize) < serumOrPerpMarket.minOrderSize
+
   return (
     <div>
       <div className="mt-1.5 px-2 md:mt-0 md:px-4 md:pt-5 lg:mt-5 lg:pt-0">
@@ -397,13 +503,13 @@ const AdvancedTradeForm = () => {
                   {t('trade:limit-price')}
                 </p>
               </div>
-              <div className="default-transition flex items-center rounded-md border border-th-input-border bg-th-input-bkg p-2 text-sm font-bold text-th-fgd-1 md:hover:border-th-input-border-hover lg:text-base">
+              <div className="relative">
                 {quoteLogoURI ? (
-                  <div className="h-5 w-5 flex-shrink-0">
+                  <div className={INPUT_PREFIX_CLASSNAMES}>
                     <Image alt="" width="20" height="20" src={quoteLogoURI} />
                   </div>
                 ) : (
-                  <div className="h-5 w-5 flex-shrink-0">
+                  <div className={INPUT_PREFIX_CLASSNAMES}>
                     <QuestionMarkCircleIcon className="h-5 w-5 text-th-fgd-3" />
                   </div>
                 )}
@@ -415,28 +521,39 @@ const AdvancedTradeForm = () => {
                   decimalScale={tickDecimals}
                   name="price"
                   id="price"
-                  className="ml-2 w-full bg-transparent font-mono focus:outline-none"
+                  className="flex w-full items-center rounded-md border border-th-input-border bg-th-input-bkg p-2 pl-9 font-mono text-sm font-bold text-th-fgd-1 focus:border-th-fgd-4 focus:outline-none md:hover:border-th-input-border-hover md:hover:focus-visible:border-th-fgd-4 lg:text-base"
                   placeholder="0.00"
                   value={tradeForm.price}
                   onValueChange={handlePriceChange}
                 />
-                <div className="text-xs font-normal text-th-fgd-4">
-                  {quoteSymbol}
-                </div>
+                <div className={INPUT_SUFFIX_CLASSNAMES}>{quoteSymbol}</div>
               </div>
             </>
           ) : null}
           <MaxSizeButton
             minOrderDecimals={minOrderDecimals}
             tickDecimals={tickDecimals}
-            useMargin={useMargin}
+            useMargin={savedCheckboxSettings.margin}
           />
           <div className="flex flex-col">
-            <div className="default-transition flex items-center rounded-md rounded-b-none border border-th-input-border bg-th-input-bkg p-2 text-sm font-bold text-th-fgd-1 md:hover:z-10 md:hover:border-th-input-border-hover lg:text-base">
-              <div className="h-5 w-5 flex-shrink-0">
+            <div className="relative">
+              <NumberFormat
+                inputMode="decimal"
+                thousandSeparator=","
+                allowNegative={false}
+                isNumericString={true}
+                decimalScale={minOrderDecimals}
+                name="base"
+                id="base"
+                className="relative flex w-full items-center rounded-md rounded-b-none border border-th-input-border bg-th-input-bkg p-2 pl-9 font-mono text-sm font-bold text-th-fgd-1 focus:z-10 focus:border-th-fgd-4 focus:outline-none md:hover:z-10 md:hover:border-th-input-border-hover md:hover:focus:border-th-fgd-4 lg:text-base"
+                placeholder="0.00"
+                value={tradeForm.baseSize}
+                onValueChange={handleBaseSizeChange}
+              />
+              <div className={`z-10 ${INPUT_PREFIX_CLASSNAMES}`}>
                 <LogoWithFallback
                   alt=""
-                  className="z-10 drop-shadow-md"
+                  className="drop-shadow-md"
                   width={'24'}
                   height={'24'}
                   src={baseLogoURI || `/icons/${baseSymbol?.toLowerCase()}.svg`}
@@ -447,30 +564,17 @@ const AdvancedTradeForm = () => {
                   }
                 />
               </div>
-              <NumberFormat
-                inputMode="decimal"
-                thousandSeparator=","
-                allowNegative={false}
-                isNumericString={true}
-                decimalScale={minOrderDecimals}
-                name="base"
-                id="base"
-                className="ml-2 w-full bg-transparent font-mono focus:outline-none"
-                placeholder="0.00"
-                value={tradeForm.baseSize}
-                onValueChange={handleBaseSizeChange}
-              />
-              <div className="text-xs font-normal text-th-fgd-4">
+              <div className={`z-10 ${INPUT_SUFFIX_CLASSNAMES}`}>
                 {baseSymbol}
               </div>
             </div>
-            <div className="default-transition -mt-[1px] flex items-center rounded-md rounded-t-none border border-th-input-border bg-th-input-bkg p-2 text-sm font-bold text-th-fgd-1 md:hover:border-th-input-border-hover lg:text-base">
+            <div className="relative">
               {quoteLogoURI ? (
-                <div className="h-5 w-5 flex-shrink-0">
+                <div className={INPUT_PREFIX_CLASSNAMES}>
                   <Image alt="" width="20" height="20" src={quoteLogoURI} />
                 </div>
               ) : (
-                <div className="h-5 w-5 flex-shrink-0">
+                <div className={INPUT_PREFIX_CLASSNAMES}>
                   <QuestionMarkCircleIcon className="h-5 w-5 text-th-fgd-3" />
                 </div>
               )}
@@ -482,15 +586,25 @@ const AdvancedTradeForm = () => {
                 decimalScale={tickDecimals}
                 name="quote"
                 id="quote"
-                className="ml-2 w-full bg-transparent font-mono focus:outline-none"
+                className="-mt-[1px] flex w-full items-center rounded-md rounded-t-none border border-th-input-border bg-th-input-bkg p-2 pl-9 font-mono text-sm font-bold text-th-fgd-1 focus:border-th-fgd-4 focus:outline-none md:hover:border-th-input-border-hover md:hover:focus:border-th-fgd-4 lg:text-base"
                 placeholder="0.00"
                 value={tradeForm.quoteSize}
                 onValueChange={handleQuoteSizeChange}
               />
-              <div className="text-xs font-normal text-th-fgd-4">
-                {quoteSymbol}
-              </div>
+              <div className={INPUT_SUFFIX_CLASSNAMES}>{quoteSymbol}</div>
             </div>
+            {serumOrPerpMarket &&
+            tradeForm.baseSize &&
+            parseFloat(tradeForm.baseSize) < serumOrPerpMarket.minOrderSize ? (
+              <div className="mt-1">
+                <InlineNotification
+                  type="error"
+                  desc={`Min order size is ${minOrderSize} ${baseSymbol}`}
+                  hideBorder
+                  hidePadding
+                />
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="mt-2 flex">
@@ -498,7 +612,7 @@ const AdvancedTradeForm = () => {
             <SpotButtonGroup
               minOrderDecimals={minOrderDecimals}
               tickDecimals={tickDecimals}
-              useMargin={useMargin}
+              useMargin={savedCheckboxSettings.margin}
             />
           ) : (
             <PerpButtonGroup
@@ -552,7 +666,10 @@ const AdvancedTradeForm = () => {
                 placement="left"
                 content={t('trade:tooltip-enable-margin')}
               >
-                <Checkbox checked={useMargin} onChange={handleSetMargin}>
+                <Checkbox
+                  checked={savedCheckboxSettings.margin}
+                  onChange={handleSetMargin}
+                >
                   {t('trade:margin')}
                 </Checkbox>
               </Tooltip>
@@ -586,10 +703,10 @@ const AdvancedTradeForm = () => {
                 !connected
                   ? ''
                   : tradeForm.side === 'buy'
-                  ? 'bg-th-up-dark text-white md:hover:bg-th-up'
-                  : 'bg-th-down-dark text-white md:hover:bg-th-down'
+                  ? 'bg-th-up-dark text-white md:hover:bg-th-up-dark md:hover:brightness-90'
+                  : 'bg-th-down text-white md:hover:bg-th-down md:hover:brightness-90'
               }`}
-              disabled={connected && !tradeForm.baseSize}
+              disabled={disabled}
               size="large"
               type="submit"
             >
@@ -631,7 +748,10 @@ const AdvancedTradeForm = () => {
           />
         </div>
       ) : null}
-      <TradeSummary mangoAccount={mangoAccount} useMargin={useMargin} />
+      <TradeSummary
+        mangoAccount={mangoAccount}
+        useMargin={savedCheckboxSettings.margin}
+      />
     </div>
   )
 }

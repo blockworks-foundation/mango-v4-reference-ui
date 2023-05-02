@@ -76,6 +76,8 @@ export const MIN_SOL_BALANCE = 0.001
 
 export const ACCOUNT_ACTION_MODAL_HEIGHT = '462px'
 
+export const TRADE_CHECKBOXES_KEY = 'tradeCheckboxes-0.1'
+
 export const ACCOUNT_ACTION_MODAL_INNER_HEIGHT = '400px'
 
 export const TRADE_VOLUME_ALERT_KEY = 'tradeVolumeAlert-0.1'
